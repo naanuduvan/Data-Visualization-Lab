@@ -1,0 +1,66 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.datasets import load_wine
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
+# 1. Load the Wine dataset (a high-dimensional dataset with 13 features)
+wine = load_wine()
+X = wine.data
+y = wine.target
+feature_names = wine.feature_names
+target_names = wine.target_names
+
+# Create a pandas DataFrame for visualization
+df = pd.DataFrame(X, columns=feature_names)
+df['class'] = [target_names[i] for i in y]
+
+display(df.head())
+
+plt.figure(figsize=(15, 6))
+pd.plotting.parallel_coordinates(df, 'class', color=('#E66101', '#FDB863', '#5E3C99'), alpha=0.7)
+plt.title('Parallel Coordinates Plot of the Wine Dataset')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+selected_features = ['alcohol', 'malic_acid', 'ash', 'total_phenols', 'class']
+sns.pairplot(df[selected_features], hue='class', palette='Set1', diag_kind='kde')
+plt.suptitle('Scatterplot Matrix for Selected Wine Features', y=1.02)
+plt.show()
+
+#Standardize the features before PCA
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+
+# Apply PCA
+pca = PCA()
+pca.fit(X_scaled)
+
+# Calculate variance explained
+explained_variance = pca.explained_variance_ratio_
+cumulative_variance = np.cumsum(explained_variance)
+
+# Scree Plot and Cumulative Explained Variance Plot
+fig, ax1 = plt.subplots(figsize=(10, 5))
+
+# Bar chart for individual explained variance (Scree Plot)
+color = 'tab:blue'
+ax1.set_xlabel('Principal Component')
+ax1.set_ylabel('Explained Variance Ratio', color=color)
+ax1.bar(range(1, len(explained_variance) + 1), explained_variance, alpha=0.7, color=color, label='Individual Variance')
+ax1.tick_params(axis='y', labelcolor=color)
+ax1.set_xticks(range(1, len(explained_variance) + 1))
+
+# Line chart for cumulative explained variance
+ax2 = ax1.twinx()
+color = 'tab:red'
+ax2.set_ylabel('Cumulative Explained Variance', color=color)
+ax2.plot(range(1, len(cumulative_variance) + 1), cumulative_variance, marker='o', color=color, label='Cumulative Variance')
+ax2.tick_params(axis='y', labelcolor=color)
+
+plt.title('Scree Plot & Cumulative Explained Variance')
+fig.tight_layout()
+plt.show()
