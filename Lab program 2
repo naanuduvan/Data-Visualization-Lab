@@ -1,0 +1,279 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from wordcloud import WordCloud
+
+# 1. Generate Synthetic Multivariate Dataset
+np.random.seed(42)
+n_samples = 200
+
+categories = ['Electronics', 'Clothing', 'Home', 'Books', 'Beauty']
+regions = ['North', 'East', 'South', 'West']
+
+data = {
+    'Date': pd.date_range(start='2023-01-01', periods=n_samples, freq='D'),
+    'Category': np.random.choice(categories, size=n_samples, p=[0.3, 0.25, 0.2, 0.15, 0.1]),
+    'Region': np.random.choice(regions, size=n_samples),
+    'Sales': np.random.exponential(scale=500, size=n_samples) + 100,
+    'Quantity': np.random.randint(1, 10, size=n_samples),
+    'Rating': np.random.uniform(1, 5, size=n_samples),
+    'Discount': np.random.uniform(0.0, 0.4, size=n_samples),
+    'Review_Text': np.random.choice([
+        'excellent quality fast delivery love it', 'good product value for money', 
+        'disappointed slow shipping broke easily', 'neutral average experience customer service ok',
+        'amazing highly recommend will buy again item perfect packaging'
+    ], size=n_samples)
+}
+
+df = pd.DataFrame(data)
+df['Profit'] = (df['Sales'] * 0.3) - (df['Sales'] * df['Discount']) + np.random.normal(0, 50, n_samples)
+
+# Set up the visualization grid (4 rows, 3 columns to host all 12 plots)
+fig = plt.figure(figsize=(24, 28))
+plt.subplots_adjust(hspace=0.4, wspace=0.3)
+
+# --- 1. BAR PLOT (Total Sales by Category) ---
+plt.subplot(4, 3, 1)
+sales_by_cat = df.groupby('Category')['Sales'].sum().reset_index()
+sns.barplot(data=sales_by_cat, x='Category', y='Sales', palette='Blues_d')
+plt.title('1. Total Sales by Category (Bar)')
+plt.ylabel('Total Sales ($)')
+
+# --- 2. STACKED BAR PLOT (Sales by Region and Category) ---
+plt.subplot(4, 3, 2)
+region_cat_sales = df.groupby(['Region', 'Category'])['Sales'].sum().unstack()
+region_cat_sales.plot(kind='bar', stacked=True, ax=plt.gca(), cmap='viridis')
+plt.title('2. Sales by Region & Category (Stacked Bar)')
+plt.ylabel('Sales ($)')
+plt.xticks(rotation=0)
+
+# --- 3. LINE PLOT (Monthly Sales Trend) ---
+plt.subplot(4, 3, 3)
+df_monthly = df.set_index('Date').resample('M')['Sales'].sum().reset_index()
+plt.plot(df_monthly['Date'], df_monthly['Sales'], marker='o', color='crimson', linewidth=2)
+plt.title('3. Monthly Sales Trend (Line)')
+plt.ylabel('Monthly Sales ($)')
+plt.xticks(rotation=15)
+
+# --- 4. SCATTER PLOT (Sales vs Profit) ---
+plt.subplot(4, 3, 4)
+sns.scatterplot(data=df, x='Sales', y='Profit', hue='Category', palette='Set2', alpha=0.8)
+plt.title('4. Sales vs. Profit Correlation (Scatter)')
+
+# --- 5. BUBBLE CHART (Sales vs Profit with Bubble Size as Quantity) ---
+plt.subplot(4, 3, 5)
+bubble = plt.scatter(df['Sales'], df['Profit'], s=df['Quantity']*40, c=df['Discount'], cmap='coolwarm', alpha=0.6, edgecolors='black')
+plt.colorbar(bubble, label='Discount %')
+plt.title('5. Profitability & Volume (Bubble: Size=Qty)')
+plt.xlabel('Sales')
+plt.ylabel('Profit')
+
+# --- 6. HISTOGRAM (Distribution of Ratings) ---
+plt.subplot(4, 3, 6)
+sns.histplot(df['Rating'], bins=15, kde=True, color='teal')
+plt.title('6. Distribution of Customer Ratings (Histogram)')
+plt.xlabel('Rating (1-5)')
+
+# --- 7. BOX PLOT (Sales distribution per Region) ---
+plt.subplot(4, 3, 7)
+sns.boxplot(data=df, x='Region', y='Sales', palette='Pastel1')
+plt.yscale('log') # Log scale to handle exponential distribution and clearly see outliers
+plt.title('7. Sales Distribution by Region (Box Plot - Log)')
+
+# --- 8. HEATMAP (Correlation Matrix of Numeric Features) ---
+plt.subplot(4, 3, 8)
+corr_matrix = df[['Sales', 'Quantity', 'Rating', 'Discount', 'Profit']].corr()
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5, cbar=False)
+plt.title('8. Feature Correlations (Heatmap)')
+
+# --- 9. RADAR / SPIDER CHART (Average Metrics per Category) ---
+# Calculating normalized averages for radar chart mapping
+cat_means = df.groupby('Category')[['Sales', 'Profit', 'Rating']].mean()
+cat_means_norm = (cat_means - cat_means.min()) / (cat_means.max() - cat_means.min()) + 0.1
+labels = cat_means_norm.columns.tolist()
+num_vars = len(labels)
+angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+angles += angles[:1]
+
+ax_radar = plt.subplot(4, 3, 9, polar=True)
+for category in cat_means_norm.index:
+    values = cat_means_norm.loc[category].values.tolist()
+    values += values[:1]
+    ax_radar.plot(angles, values, label=category, linewidth=1.5)
+    ax_radar.fill(angles, values, alpha=0.1)
+ax_radar.set_theta_offset(np.pi / 2)
+ax_radar.set_theta_direction(-1)
+ax_radar.set_thetagrids(np.degrees(angles[:-1]), labels)
+plt.title('9. Normalized Averages per Category (Radar)', y=1.1)
+plt.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+
+# --- 10. PIE CHART (Proportion of Orders by Region) ---
+plt.subplot(4, 3, 10)
+region_counts = df['Region'].value_counts()
+plt.pie(region_counts, labels=region_counts.index, autopct='%1.1f%%', startangle=140, colors=sns.color_palette('Set3'))
+plt.title('10. Order Volume Shares by Region (Pie)')
+
+# --- 11. TREE MAP (Simulated using stacked rectangular grid) ---
+plt.subplot(4, 3, 11)
+# Sort and calculate proportions for our treemap approximation
+sorted_cat = sales_by_cat.sort_values(by='Sales', ascending=False)
+proportions = sorted_cat['Sales'] / sorted_cat['Sales'].sum()
+cum_proportions = np.insert(np.cumsum(proportions.values), 0, 0)
+for i in range(len(sorted_cat)):
+    plt.barh(y=0, width=proportions.iloc[i], left=cum_proportions[i], 
+             edgecolor='white', label=sorted_cat['Category'].iloc[i], height=1.0)
+plt.gca().set_xlim(0, 1)
+plt.gca().set_ylim(-0.5, 0.5)
+plt.gca().axis('off')
+plt.legend(loc='center', bbox_to_anchor=(0.5, 0.5), ncol=2)
+plt.title('11. Sales Contribution Treemap Layout (Tree Map)')
+
+# --- 12. WORD CLOUD (Customer Review Words Analysis) ---
+plt.subplot(4, 3, 12)
+text = ' '.join(df['Review_Text'])
+wordcloud = WordCloud(width=400, height=300, background_color='white', colormap='plasma').generate(text)
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')
+plt.title('12. Review Sentiments Keywords (Word Cloud)')
+
+plt.show()import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from wordcloud import WordCloud
+
+# 1. Generate Synthetic Multivariate Dataset
+np.random.seed(42)
+n_samples = 200
+
+categories = ['Electronics', 'Clothing', 'Home', 'Books', 'Beauty']
+regions = ['North', 'East', 'South', 'West']
+
+data = {
+    'Date': pd.date_range(start='2023-01-01', periods=n_samples, freq='D'),
+    'Category': np.random.choice(categories, size=n_samples, p=[0.3, 0.25, 0.2, 0.15, 0.1]),
+    'Region': np.random.choice(regions, size=n_samples),
+    'Sales': np.random.exponential(scale=500, size=n_samples) + 100,
+    'Quantity': np.random.randint(1, 10, size=n_samples),
+    'Rating': np.random.uniform(1, 5, size=n_samples),
+    'Discount': np.random.uniform(0.0, 0.4, size=n_samples),
+    'Review_Text': np.random.choice([
+        'excellent quality fast delivery love it', 'good product value for money', 
+        'disappointed slow shipping broke easily', 'neutral average experience customer service ok',
+        'amazing highly recommend will buy again item perfect packaging'
+    ], size=n_samples)
+}
+
+df = pd.DataFrame(data)
+df['Profit'] = (df['Sales'] * 0.3) - (df['Sales'] * df['Discount']) + np.random.normal(0, 50, n_samples)
+
+# Set up the visualization grid (4 rows, 3 columns to host all 12 plots)
+fig = plt.figure(figsize=(24, 28))
+plt.subplots_adjust(hspace=0.4, wspace=0.3)
+
+# --- 1. BAR PLOT (Total Sales by Category) ---
+plt.subplot(4, 3, 1)
+sales_by_cat = df.groupby('Category')['Sales'].sum().reset_index()
+sns.barplot(data=sales_by_cat, x='Category', y='Sales', palette='Blues_d')
+plt.title('1. Total Sales by Category (Bar)')
+plt.ylabel('Total Sales ($)')
+
+# --- 2. STACKED BAR PLOT (Sales by Region and Category) ---
+plt.subplot(4, 3, 2)
+region_cat_sales = df.groupby(['Region', 'Category'])['Sales'].sum().unstack()
+region_cat_sales.plot(kind='bar', stacked=True, ax=plt.gca(), cmap='viridis')
+plt.title('2. Sales by Region & Category (Stacked Bar)')
+plt.ylabel('Sales ($)')
+plt.xticks(rotation=0)
+
+# --- 3. LINE PLOT (Monthly Sales Trend) ---
+plt.subplot(4, 3, 3)
+df_monthly = df.set_index('Date').resample('M')['Sales'].sum().reset_index()
+plt.plot(df_monthly['Date'], df_monthly['Sales'], marker='o', color='crimson', linewidth=2)
+plt.title('3. Monthly Sales Trend (Line)')
+plt.ylabel('Monthly Sales ($)')
+plt.xticks(rotation=15)
+
+# --- 4. SCATTER PLOT (Sales vs Profit) ---
+plt.subplot(4, 3, 4)
+sns.scatterplot(data=df, x='Sales', y='Profit', hue='Category', palette='Set2', alpha=0.8)
+plt.title('4. Sales vs. Profit Correlation (Scatter)')
+
+# --- 5. BUBBLE CHART (Sales vs Profit with Bubble Size as Quantity) ---
+plt.subplot(4, 3, 5)
+bubble = plt.scatter(df['Sales'], df['Profit'], s=df['Quantity']*40, c=df['Discount'], cmap='coolwarm', alpha=0.6, edgecolors='black')
+plt.colorbar(bubble, label='Discount %')
+plt.title('5. Profitability & Volume (Bubble: Size=Qty)')
+plt.xlabel('Sales')
+plt.ylabel('Profit')
+
+# --- 6. HISTOGRAM (Distribution of Ratings) ---
+plt.subplot(4, 3, 6)
+sns.histplot(df['Rating'], bins=15, kde=True, color='teal')
+plt.title('6. Distribution of Customer Ratings (Histogram)')
+plt.xlabel('Rating (1-5)')
+
+# --- 7. BOX PLOT (Sales distribution per Region) ---
+plt.subplot(4, 3, 7)
+sns.boxplot(data=df, x='Region', y='Sales', palette='Pastel1')
+plt.yscale('log') # Log scale to handle exponential distribution and clearly see outliers
+plt.title('7. Sales Distribution by Region (Box Plot - Log)')
+
+# --- 8. HEATMAP (Correlation Matrix of Numeric Features) ---
+plt.subplot(4, 3, 8)
+corr_matrix = df[['Sales', 'Quantity', 'Rating', 'Discount', 'Profit']].corr()
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt='.2f', linewidths=0.5, cbar=False)
+plt.title('8. Feature Correlations (Heatmap)')
+
+# --- 9. RADAR / SPIDER CHART (Average Metrics per Category) ---
+# Calculating normalized averages for radar chart mapping
+cat_means = df.groupby('Category')[['Sales', 'Profit', 'Rating']].mean()
+cat_means_norm = (cat_means - cat_means.min()) / (cat_means.max() - cat_means.min()) + 0.1
+labels = cat_means_norm.columns.tolist()
+num_vars = len(labels)
+angles = np.linspace(0, 2 * np.pi, num_vars, endpoint=False).tolist()
+angles += angles[:1]
+
+ax_radar = plt.subplot(4, 3, 9, polar=True)
+for category in cat_means_norm.index:
+    values = cat_means_norm.loc[category].values.tolist()
+    values += values[:1]
+    ax_radar.plot(angles, values, label=category, linewidth=1.5)
+    ax_radar.fill(angles, values, alpha=0.1)
+ax_radar.set_theta_offset(np.pi / 2)
+ax_radar.set_theta_direction(-1)
+ax_radar.set_thetagrids(np.degrees(angles[:-1]), labels)
+plt.title('9. Normalized Averages per Category (Radar)', y=1.1)
+plt.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1))
+
+# --- 10. PIE CHART (Proportion of Orders by Region) ---
+plt.subplot(4, 3, 10)
+region_counts = df['Region'].value_counts()
+plt.pie(region_counts, labels=region_counts.index, autopct='%1.1f%%', startangle=140, colors=sns.color_palette('Set3'))
+plt.title('10. Order Volume Shares by Region (Pie)')
+
+# --- 11. TREE MAP (Simulated using stacked rectangular grid) ---
+plt.subplot(4, 3, 11)
+# Sort and calculate proportions for our treemap approximation
+sorted_cat = sales_by_cat.sort_values(by='Sales', ascending=False)
+proportions = sorted_cat['Sales'] / sorted_cat['Sales'].sum()
+cum_proportions = np.insert(np.cumsum(proportions.values), 0, 0)
+for i in range(len(sorted_cat)):
+    plt.barh(y=0, width=proportions.iloc[i], left=cum_proportions[i], 
+             edgecolor='white', label=sorted_cat['Category'].iloc[i], height=1.0)
+plt.gca().set_xlim(0, 1)
+plt.gca().set_ylim(-0.5, 0.5)
+plt.gca().axis('off')
+plt.legend(loc='center', bbox_to_anchor=(0.5, 0.5), ncol=2)
+plt.title('11. Sales Contribution Treemap Layout (Tree Map)')
+
+# --- 12. WORD CLOUD (Customer Review Words Analysis) ---
+plt.subplot(4, 3, 12)
+text = ' '.join(df['Review_Text'])
+wordcloud = WordCloud(width=400, height=300, background_color='white', colormap='plasma').generate(text)
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')
+plt.title('12. Review Sentiments Keywords (Word Cloud)')
+
+plt.show()
