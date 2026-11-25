@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""
+Stock time-series analysis: candlesticks, SMA/EMA, rolling volatility bands,
+volume trends, seasonality, drawdowns and variable relationships.
+
+Usage:
+    pip install yfinance pandas numpy matplotlib scipy
+    python stock_analysis.py --ticker AAPL --years 5
+    python stock_analysis.py --synthetic        # offline test data
+"""
+import argparse
+import os
+import sys
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from scipy import stats
+
+plt.rcParams.update({"figure.dpi": 110, "axes.grid": True, "grid.alpha": 0.25,
+                     "axes.spines.top": False, "axes.spines.right": False})
+UP, DOWN = "#2e8b57", "#c0392b"
+
+
+# ----------------------------------------------------------------- data
+def load_data(ticker, years, synthetic):
+    if not synthetic:
+        import yfinance as yf
+        df = yf.download(ticker, period=f"{years}y", auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        if df.empty:
+            raise SystemExit(f"No data returned for {ticker}")
+        return df
+    # synthetic GBM with regime changes, a yearly seasonal tilt and volume linked to |returns|
+    rng = np.random.default_rng(42)
+    idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=252 * years)
+    n = len(idx)
+    vol = np.where(np.arange(n) % 500 < 100, 0.028, 0.011)          # volatility regimes
+    seas = 0.0006 * np.sin(2 * np.pi * idx.dayofyear / 365.0)       # seasonal drift
+    ret = 0.0004 + seas + vol * rng.standard_normal(n)
+    close = 100 * np.exp(np.cumsum(ret))
+    open_ = np.r_[100, close[:-1]] * (1 + 0.002 * rng.standard_normal(n))
+    high = np.maximum(open_, close) * (1 + np.abs(rng.normal(0, 0.006, n)))
+    low = np.minimum(open_, close) * (1 - np.abs(rng.normal(0, 0.006, n)))
+    volume = (2e6 * (1 + 0.0004 * np.arange(n)) * (1 + 25 * np.abs(ret))
+              * rng.lognormal(0, 0.25, n)).astype(int)
+    return pd.DataFrame({"Open": open_, "High": high, "Low": low,
+                         "Close": close, "Volume": volume}, index=idx)
+
+
+# ----------------------------------------------------------- indicators
+def add_indicators(df, bb_window=20, bb_k=2):
+    c = df["Close"]
+    df["Return"] = c.pct_change()
+    df["LogRet"] = np.log(c).diff()
+    for w in (20, 50, 200):
+        df[f"SMA{w}"] = c.rolling(w).mean()
+    for w in (12, 26, 50):
+        df[f"EMA{w}"] = c.ewm(span=w, adjust=False).mean()
+    # Bollinger bands = rolling-volatility bands around SMA
+    mid = c.rolling(bb_window).mean()
+    sd = c.rolling(bb_window).std()
+    df["BB_mid"], df["BB_up"], df["BB_lo"] = mid, mid + bb_k * sd, mid - bb_k * sd
+    df["BB_pctB"] = (c - df["BB_lo"]) / (df["BB_up"] - df["BB_lo"])
+    # annualised rolling volatility (21d and 63d)
+    df["Vol21"] = df["LogRet"].rolling(21).std() * np.sqrt(252)
+    df["Vol63"] = df["LogRet"].rolling(63).std() * np.sqrt(252)
+    # volume
+    df["VolSMA20"] = df["Volume"].rolling(20).mean()
+    df["VolSMA50"] = df["Volume"].rolling(50).mean()
+    df["OBV"] = (np.sign(c.diff()).fillna(0) * df["Volume"]).cumsum()
+    # drawdown
+    df["Drawdown"] = c / c.cummax() - 1
+    df["Range"] = (df["High"] - df["Low"]) / c
+    return df
+
+
+# ------------------------------------------------------------- plotting
+def candles(ax, d, width=0.6):
+    x = np.arange(len(d))
+    for i, (o, h, l, c) in enumerate(zip(d.Open, d.High, d.Low, d.Close)):
+        col = UP if c >= o else DOWN
+        ax.vlines(i, l, h, color=col, lw=0.8, zorder=2)
+        ax.add_patch(Rectangle((i - width / 2, min(o, c)), width, max(abs(c - o), 1e-9),
+                               color=col, zorder=3))
+    ax.set_xlim(-1, len(d))
+    return x
+
+
+def date_ticks(ax, d, n=8):
+    pos = np.linspace(0, len(d) - 1, n).astype(int)
+    ax.set_xticks(pos)
+    ax.set_xticklabels([d.index[p].strftime("%b %y") for p in pos])
+
+
+def fig_price(df, ticker, out, last=180):
+    d = df.iloc[-last:]
+    fig, (a1, a2) = plt.subplots(2, 1, figsize=(13, 8), sharex=True,
+                                 gridspec_kw={"height_ratios": [3.2, 1]})
+    x = candles(a1, d)
+    a1.plot(x, d.SMA20, label="SMA20", lw=1.2)
+    a1.plot(x, d.SMA50, label="SMA50", lw=1.2)
+    a1.plot(x, d.EMA12, "--", label="EMA12", lw=1.1)
+    a1.plot(x, d.EMA26, "--", label="EMA26", lw=1.1)
+    a1.fill_between(x, d.BB_lo, d.BB_up, color="grey", alpha=0.15, label="Bollinger (20, 2σ)")
+    a1.set_title(f"{ticker}: candlesticks with SMA/EMA overlays and rolling-volatility bands (last {last} sessions)")
+    a1.set_ylabel("Price"); a1.legend(ncol=6, fontsize=8, loc="upper left")
+    cols = np.where(d.Close >= d.Open, UP, DOWN)
+    a2.bar(x, d.Volume, color=cols, alpha=0.7, width=0.8)
+    a2.plot(x, d.VolSMA20, color="k", lw=1, label="Vol SMA20")
+    a2.set_ylabel("Volume"); a2.legend(fontsize=8)
+    date_ticks(a2, d)
+    fig.tight_layout(); fig.savefig(out); plt.close(fig)
+
+
+def fig_trend(df, ticker, out):
+    fig, ax = plt.subplots(3, 1, figsize=(13, 9.5), sharex=True,
+                           gridspec_kw={"height_ratios": [2.5, 1.3, 1.2]})
+    ax[0].semilogy(df.index, df.Close, lw=1, label="Close", color="k")
+    for c in ("SMA50", "SMA200", "EMA50"):
+        ax[0].plot(df.index, df[c], lw=1.3, label=c)
+    # golden / death crosses
+    cross = np.sign(df.SMA50 - df.SMA200)
+    ev = df[(cross != cross.shift()) & cross.notna() & cross.shift().notna()]
+    for t, r in ev.iterrows():
+        gold = r.SMA50 > r.SMA200
+        ax[0].scatter(t, r.SMA200, marker="^" if gold else "v", s=70,
+                      color=UP if gold else DOWN, zorder=5)
+    ax[0].set_title(f"{ticker}: long-term trend (log scale), ▲ golden cross / ▼ death cross")
+    ax[0].legend(ncol=4, fontsize=8)
+    ax[1].plot(df.index, df.Vol21, label="21d vol", lw=1)
+    ax[1].plot(df.index, df.Vol63, label="63d vol", lw=1.3)
+    ax[1].set_ylabel("Annualised vol"); ax[1].legend(fontsize=8)
+    ax[2].fill_between(df.index, df.Drawdown, 0, color=DOWN, alpha=0.5)
+    ax[2].set_ylabel("Drawdown")
+    fig.tight_layout(); fig.savefig(out); plt.close(fig)
+
+
+def fig_volume(df, ticker, out):
+    fig, ax = plt.subplots(3, 1, figsize=(13, 9), sharex=True)
+    ax[0].bar(df.index, df.Volume, color="steelblue", alpha=0.4, width=1)
+    ax[0].plot(df.index, df.VolSMA20, label="SMA20", lw=1)
+    ax[0].plot(df.index, df.VolSMA50, label="SMA50", lw=1.4)
+    t = np.arange(len(df))
+    sl, ic, *_ = stats.linregress(t, df.Volume.values)
+    ax[0].plot(df.index, ic + sl * t, "k--", label=f"Linear trend ({sl*252/df.Volume.mean():+.1%}/yr)")
+    ax[0].legend(fontsize=8); ax[0].set_title(f"{ticker}: volume trend")
+    ax[1].plot(df.index, df.OBV, color="purple"); ax[1].set_ylabel("On-balance volume")
+    ax[2].plot(df.index, df.Close, color="k", lw=1); ax[2].set_ylabel("Close")
+    fig.tight_layout(); fig.savefig(out); plt.close(fig)
+
+
+def fig_seasonality(df, ticker, out):
+    m = df.Close.resample("ME").last().pct_change().dropna()
+    pivot = m.groupby([m.index.year, m.index.month]).first().unstack()
+    fig, ax = plt.subplots(1, 3, figsize=(16, 5), gridspec_kw={"width_ratios": [1.6, 1, 1]})
+    im = ax[0].imshow(pivot.values * 100, aspect="auto", cmap="RdYlGn", vmin=-12, vmax=12)
+    ax[0].set_xticks(range(pivot.shape[1])); ax[0].set_xticklabels(
+        [pd.Timestamp(2000, k, 1).strftime("%b") for k in pivot.columns])
+    ax[0].set_yticks(range(pivot.shape[0])); ax[0].set_yticklabels(pivot.index)
+    ax[0].grid(False); ax[0].set_title("Monthly returns (%)")
+    plt.colorbar(im, ax=ax[0])
+    avg = m.groupby(m.index.month).mean() * 100
+    ax[1].bar([pd.Timestamp(2000, k, 1).strftime("%b") for k in avg.index], avg.values,
+              color=np.where(avg.values >= 0, UP, DOWN))
+    ax[1].set_title("Average return by month (%)"); ax[1].tick_params(axis="x", rotation=60)
+    dow = df.Return.groupby(df.index.dayofweek).mean() * 100
+    ax[2].bar(["Mon", "Tue", "Wed", "Thu", "Fri"], dow.values,
+              color=np.where(dow.values >= 0, UP, DOWN))
+    ax[2].set_title("Average daily return by weekday (%)")
+    fig.suptitle(f"{ticker}: seasonality"); fig.tight_layout(); fig.savefig(out); plt.close(fig)
+
+
+def fig_relationships(df, ticker, out):
+    d = pd.DataFrame({
+        "Return": df.Return, "|Return|": df.Return.abs(), "Range": df.Range,
+        "Volume chg": df.Volume.pct_change(), "Volume / avg": df.Volume / df.VolSMA50,
+        "Vol21": df.Vol21, "Dist to SMA50": df.Close / df.SMA50 - 1,
+    }).dropna()
+    corr = d.corr()
+    fig, ax = plt.subplots(1, 2, figsize=(14, 5.5))
+    im = ax[0].imshow(corr, cmap="coolwarm", vmin=-1, vmax=1)
+    ax[0].set_xticks(range(len(corr))); ax[0].set_xticklabels(corr.columns, rotation=45, ha="right")
+    ax[0].set_yticks(range(len(corr))); ax[0].set_yticklabels(corr.columns); ax[0].grid(False)
+    for i in range(len(corr)):
+        for j in range(len(corr)):
+            ax[0].text(j, i, f"{corr.iloc[i, j]:.2f}", ha="center", va="center", fontsize=8)
+    plt.colorbar(im, ax=ax[0]); ax[0].set_title("Correlation matrix")
+    ax[1].scatter(d["Volume / avg"], d["|Return|"] * 100, s=6, alpha=0.4)
+    sl, ic, r, p, _ = stats.linregress(d["Volume / avg"], d["|Return|"] * 100)
+    xs = np.linspace(d["Volume / avg"].min(), d["Volume / avg"].max(), 50)
+    ax[1].plot(xs, ic + sl * xs, "r"); ax[1].set_xlabel("Volume relative to 50d avg")
+    ax[1].set_ylabel("|Daily return| (%)"); ax[1].set_title(f"Volume vs move size (r={r:.2f}, p={p:.1e})")
+    fig.suptitle(f"{ticker}: relationships among variables"); fig.tight_layout()
+    fig.savefig(out); plt.close(fig)
+    return corr
+
+
+# --------------------------------------------------------------- report
+def summarize(df, ticker, corr):
+    c, r = df.Close, df.LogRet.dropna()
+    yrs = (df.index[-1] - df.index[0]).days / 365.25
+    cagr = (c.iloc[-1] / c.iloc[0]) ** (1 / yrs) - 1
+    t = np.arange(len(c))
+    lr = stats.linregress(t, np.log(c.values))
+    ann_ret, ann_vol = r.mean() * 252, r.std() * np.sqrt(252)
+    mdd = df.Drawdown.min(); mdd_date = df.Drawdown.idxmin()
+    cross = np.sign(df.SMA50 - df.SMA200)
+    ev = df[(cross != cross.shift()) & cross.notna() & cross.shift().notna()]
+    m = c.resample("ME").last().pct_change().dropna()
+    mavg = m.groupby(m.index.month).mean()
+    big = df.Return.abs().nlargest(5)
+    v = df.Vol21.dropna()
+    lines = [
+        f"===== {ticker}: {df.index[0].date()} -> {df.index[-1].date()} ({len(df)} sessions) =====",
+        f"Total return {c.iloc[-1]/c.iloc[0]-1:+.1%} | CAGR {cagr:+.1%} | ann. mean {ann_ret:+.1%} | ann. vol {ann_vol:.1%}",
+        f"Sharpe (rf=0): {ann_ret/ann_vol:.2f} | R² of log-price trend: {lr.rvalue**2:.2f} "
+        f"(implied drift {np.exp(lr.slope*252)-1:+.1%}/yr)",
+        f"Max drawdown {mdd:.1%} on {mdd_date.date()} | current drawdown {df.Drawdown.iloc[-1]:.1%}",
+        f"Current price vs SMA50 / SMA200: {c.iloc[-1]/df.SMA50.iloc[-1]-1:+.1%} / {c.iloc[-1]/df.SMA200.iloc[-1]-1:+.1%}",
+        f"Trend state: {'bullish (SMA50>SMA200)' if df.SMA50.iloc[-1] > df.SMA200.iloc[-1] else 'bearish (SMA50<SMA200)'}",
+        "Recent SMA50/200 crosses: " + (", ".join(f"{i.date()} {'golden' if r_.SMA50>r_.SMA200 else 'death'}"
+                                               for i, r_ in ev.tail(4).iterrows()) or "none"),
+        f"21d vol: now {v.iloc[-1]:.1%} | median {v.median():.1%} | min {v.min():.1%} | max {v.max():.1%} "
+        f"(percentile of now: {(v < v.iloc[-1]).mean():.0%})",
+        f"Return skew {stats.skew(r):.2f}, excess kurtosis {stats.kurtosis(r):.2f} (fat tails if >0)",
+        f"Best / worst avg month: {pd.Timestamp(2000, mavg.idxmax(), 1):%b} ({mavg.max():+.1%}) / "
+        f"{pd.Timestamp(2000, mavg.idxmin(), 1):%b} ({mavg.min():+.1%})",
+        "Largest daily moves: " + ", ".join(f"{i.date()} ({df.Return[i]:+.1%})" for i in big.index),
+        f"Volume linear trend: {stats.linregress(t, df.Volume.values).slope*252/df.Volume.mean():+.1%}/yr",
+        f"Corr(|return|, volume/avg) = {corr.loc['|Return|', 'Volume / avg']:.2f}; "
+        f"Corr(return, volume chg) = {corr.loc['Return', 'Volume chg']:.2f}; "
+        f"Corr(|return|, Vol21) = {corr.loc['|Return|', 'Vol21']:.2f}",
+    ]
+    return "\n".join(lines)
+
+
+def in_notebook():
+    """True inside Jupyter / Colab, where sys.argv holds kernel arguments."""
+    return "ipykernel" in sys.modules or any("ipykernel" in x for x in sys.argv[:1])
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ticker", default="AAPL")
+    ap.add_argument("--years", type=int, default=5)
+    ap.add_argument("--synthetic", action="store_true")
+    ap.add_argument("--out", default="output")
+    # In a notebook, ignore the kernel's own flags (e.g. -f kernel.json).
+    # Pass your own list, e.g. main(["--ticker", "MSFT"]), to override defaults.
+    if argv is None:
+        argv = [] if in_notebook() else sys.argv[1:]
+    a, _unknown = ap.parse_known_args(argv)
+    os.makedirs(a.out, exist_ok=True)
+
+    df = add_indicators(load_data(a.ticker, a.years, a.synthetic))
+    df.to_csv(f"{a.out}/{a.ticker}_data.csv")
+    pngs = [f"{a.out}/1_candles_overlays.png", f"{a.out}/2_trend_volatility_drawdown.png",
+            f"{a.out}/3_volume_trend.png", f"{a.out}/4_seasonality.png",
+            f"{a.out}/5_relationships.png"]
+    fig_price(df, a.ticker, pngs[0])
+    fig_trend(df, a.ticker, pngs[1])
+    fig_volume(df, a.ticker, pngs[2])
+    fig_seasonality(df, a.ticker, pngs[3])
+    corr = fig_relationships(df, a.ticker, pngs[4])
+    rep = summarize(df, a.ticker, corr)
+    open(f"{a.out}/summary.txt", "w").write(rep)
+    print(rep)
+
+    if in_notebook():  # show the saved charts inline
+        try:
+            from IPython.display import Image, display
+            for f in pngs:
+                display(Image(filename=f))
+        except ImportError:
+            pass
+    return df
+
+
+if __name__ == "__main__":
+    main()
